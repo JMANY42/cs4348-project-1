@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define ATTACH_RETRIES 50                 /* 50 * 100ms = wait up to 5s for the dispatcher */
+#define ATTACH_RETRIES 50                 // try 50 times, 100 ms apart: wait up to 5 seconds for the dispatcher
 
 void die(const char *msg)
 {
@@ -24,7 +24,7 @@ void install_handler(int sig, void (*fn)(int))
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = fn;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;                      /* no SA_RESTART: let read/mq_receive see EINTR */
+    sa.sa_flags = 0;                      // a signal interrupts a waiting read so the loop can check for shutdown
     if (sigaction(sig, &sa, NULL) == -1)
         die("sigaction");
 }
@@ -37,7 +37,7 @@ static void sleep_ms(long ms)
 
 shm_region_t *shm_create(void)
 {
-    shm_unlink(SHM_NAME);                 /* discard a stale region left by a crash */
+    shm_unlink(SHM_NAME);                 // remove any leftover copy from a crash
     int fd = shm_open(SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
     if (fd == -1)
         die("shm_open (create)");
@@ -46,10 +46,10 @@ shm_region_t *shm_create(void)
     shm_region_t *shm = mmap(NULL, sizeof(shm_region_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shm == MAP_FAILED)
         die("mmap");
-    close(fd);                            /* the mapping stays valid after close */
+    close(fd);                            // the memory stays usable after closing the file
 
     memset(shm, 0, sizeof *shm);
-    if (sem_init(&shm->lock, 1, 1) == -1) /* pshared=1: usable across processes */
+    if (sem_init(&shm->lock, 1, 1) == -1) // the 1 lets other programs share this lock
         die("sem_init");
     return shm;
 }
@@ -69,7 +69,7 @@ shm_region_t *shm_attach(void)
         fprintf(stderr, "shared memory %s not found - is the dispatcher running?\n", SHM_NAME);
         exit(1);
     }
-    /* The dispatcher may not have called ftruncate yet; wait until the region is full size. */
+    /* The dispatcher may not have finished sizing the memory yet, so wait until it has. */
     struct stat st;
     for (int i = 0; i < ATTACH_RETRIES; i++) {
         if (fstat(fd, &st) == -1)
@@ -92,7 +92,7 @@ mqd_t mq_create(void)
     attr.mq_maxmsg = 10;
     attr.mq_msgsize = sizeof(job_msg_t);
 
-    mq_unlink(MQ_NAME);                   /* attributes only apply to a newly created queue */
+    mq_unlink(MQ_NAME);                   // start a new queue so our size settings take effect
     mqd_t mq = mq_open(MQ_NAME, O_CREAT | O_EXCL | O_WRONLY, 0666, &attr);
     if (mq == (mqd_t)-1)
         die("mq_open (create)");

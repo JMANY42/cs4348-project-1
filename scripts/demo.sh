@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Milestone 2 demo: start dispatcher, logger and worker, push jobs through
-# every IPC path, then shut down and show that all IPC objects are removed.
+# Milestone 2 demo: start the dispatcher, logger and worker, send jobs that
+# use every communication path, then shut down and show that all the shared
+# pipes, queue and memory were cleaned up.
 set -u
 cd "$(dirname "$0")/.."
 

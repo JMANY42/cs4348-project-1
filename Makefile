@@ -17,6 +17,6 @@ run: all
 clean:
 	rm -f $(BINS)
 
-# Remove IPC objects left behind if a process crashed
+# Delete leftover pipes, queue and shared memory if a program crashed
 clean-ipc:
 	rm -f /tmp/jobsys_req /tmp/jobsys_resp_* /dev/shm/jobsys_shm /dev/mqueue/jobsys_mq

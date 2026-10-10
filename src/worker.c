@@ -1,9 +1,10 @@
 /*
- * worker.c - performs jobs.
+ * worker.c - the program that actually does the jobs.
  *
- * Receives jobs from the message queue, writes the result into the shared
- * memory slot, then sends SIGUSR1 to the dispatcher and the logger.
- * In Milestone 2 the computation itself is a stub.
+ * Takes jobs from the queue, writes each result into shared memory, then
+ * signals the dispatcher and the logger that a result is ready.
+ * In milestone 2 the jobs aren't really computed yet; it just sends back
+ * a placeholder answer.
  */
 #include <errno.h>
 #include <signal.h>
@@ -18,7 +19,8 @@ static volatile sig_atomic_t stop = 0;
 
 static void on_stop(int sig) { (void)sig; stop = 1; }
 
-/* Fill r->summary / r->data / r->length / r->status. Real computations arrive in Milestone 3. */
+// Do the job and store the answer and status in r
+// The real work will be added in milestone 3
 static void execute_job(const job_msg_t *job, job_record_t *r)
 {
     r->length = 0;
@@ -41,13 +43,13 @@ static void execute_job(const job_msg_t *job, job_record_t *r)
 }
 
 /*
- * The slot holds only one job, so don't overwrite it until the logger has
- * recorded the previous one. If the logger is not running, don't wait;
- * that record is picked up by the logger's startup recovery instead.
+ * Shared memory only has room for one job, so don't overwrite it until the
+ * logger has saved the last one. If the logger isn't running, don't wait;
+ * the logger will check for missed jobs when it starts back up.
  */
 static void wait_for_logger(shm_region_t *shm)
 {
-    struct timespec poll = { 0, 1000000L };   /* 1 ms */
+    struct timespec poll = { 0, 1000000L };   // check every 1 ms
     for (;;) {
         shm_lock(shm);
         int pending = shm->slot.job_id > 0 && !shm->slot.logger_done;

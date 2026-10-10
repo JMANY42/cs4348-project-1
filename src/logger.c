@@ -1,9 +1,10 @@
 /*
- * logger.c - persistent record of completed jobs.
+ * logger.c - keeps a permanent record of finished jobs.
  *
- * Sleeps until the worker sends SIGUSR1, then reads the completed job from
- * shared memory and appends one JSON line to LOG_FILE. Records it has not
- * yet logged (logger_done == 0) are picked up again on restart.
+ * Sleeps until the worker signals that a job is done, then reads that job
+ * from shared memory and adds one line describing it to the log file.
+ * If a job finished while the logger was off, it gets logged the next
+ * time the logger starts.
  */
 #include <signal.h>
 #include <stdio.h>
@@ -22,7 +23,7 @@ static FILE *log_fp;
 static long jobs_logged = 0;
 static long jobs_failed = 0;
 
-/* Write s as a JSON string literal, escaping quotes, backslashes and control characters. */
+/* Write s in quotes, escaping any characters that would break the JSON format. */
 static void put_json_string(const char *s)
 {
     fputc('"', log_fp);
@@ -49,7 +50,7 @@ static void log_event(const char *event)
     fflush(log_fp);
 }
 
-/* Log the shared memory slot if it holds a job not yet written to the log. */
+/* If shared memory holds a job we haven't logged yet, log it. */
 static void log_slot(shm_region_t *shm)
 {
     shm_lock(shm);
@@ -87,7 +88,7 @@ int main(void)
     install_handler(SIGTERM, on_stop);
     install_handler(SIGUSR1, on_usr1);
 
-    /* Same pattern as the dispatcher: SIGUSR1 is only delivered inside sigsuspend(). */
+    /* Same idea as the dispatcher: hold the worker's signal until we're waiting for it, so none get lost. */
     sigset_t usr1, waitmask;
     sigemptyset(&usr1);
     sigaddset(&usr1, SIGUSR1);
@@ -104,7 +105,7 @@ int main(void)
     printf("[logger] pid %d attached to %s, logging to %s\n", (int)getpid(), SHM_NAME, LOG_FILE);
     log_event("logger_start");
 
-    log_slot(shm);                        /* recover a job completed while we were down */
+    log_slot(shm);                        // log any job that finished while the logger was off
 
     while (!stop) {
         while (!job_ready && !stop)

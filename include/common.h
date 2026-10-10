@@ -1,6 +1,7 @@
 /*
- * common.h - names, limits and message/shared-memory formats shared by
- * all four processes (client, dispatcher, worker, logger).
+ * common.h - settings and data layouts used by all four programs
+ * (client, dispatcher, worker, logger), so they agree on how to talk
+ * to each other.
  */
 #ifndef COMMON_H
 #define COMMON_H
@@ -12,25 +13,25 @@
 #include <sys/types.h>
 #include <time.h>
 
-/* IPC object names */
-#define REQ_FIFO      "/tmp/jobsys_req"        /* client -> dispatcher (shared by all clients) */
-#define RESP_FIFO_FMT "/tmp/jobsys_resp_%d"    /* dispatcher -> client (one per client pid)    */
-#define MQ_NAME       "/jobsys_mq"             /* dispatcher -> worker                         */
-#define SHM_NAME      "/jobsys_shm"            /* worker -> dispatcher, worker -> logger       */
+/* Names of the pipes, queue, shared memory, and log file the programs share */
+#define REQ_FIFO      "/tmp/jobsys_req"        // clients send requests to the dispatcher here (one pipe for everyone)
+#define RESP_FIFO_FMT "/tmp/jobsys_resp_%d"    // dispatcher replies to a client here (each client gets its own pipe)
+#define MQ_NAME       "/jobsys_mq"             // dispatcher hands jobs to the worker here
+#define SHM_NAME      "/jobsys_shm"            // worker leaves finished results here for the dispatcher and logger
 #define LOG_FILE      "jobs.log"
 
-/* Limits */
+/* Size limits */
 #define MAX_ARGS       64
 #define DESC_LEN       128
 #define SUMMARY_LEN    256
-#define MAX_DATA_BYTES (1 << 20)                       /* 1 MB output cap (M1 assumption) */
+#define MAX_DATA_BYTES (1 << 20)                       // a job's output can be at most 1 MB (assumed in milestone 1)
 #define MAX_DATA_ITEMS (MAX_DATA_BYTES / sizeof(int64_t))
-#define MAX_FIB_N      92                              /* fib(92) is the largest that fits in int64 */
+#define MAX_FIB_N      92                              // fib(93) and up are too big for a 64-bit integer
 
 typedef enum { JOB_PING, JOB_SORT, JOB_PRIMES_RANGE, JOB_FIB, JOB_IS_PRIME, JOB_TYPE_COUNT } job_type_t;
 typedef enum { ST_QUEUED, ST_RUNNING, ST_DONE, ST_ERROR } job_status_t;
 
-/* Client -> Dispatcher, over REQ_FIFO */
+/* A job request the client sends to the dispatcher */
 typedef struct {
     job_type_t type;
     pid_t client_pid;
@@ -38,7 +39,7 @@ typedef struct {
     int64_t args[MAX_ARGS];
 } client_request_t;
 
-/* Dispatcher -> Client, over the client's response FIFO */
+/* The reply the dispatcher sends back to the client */
 typedef struct {
     int job_id;
     job_type_t type;
@@ -46,7 +47,7 @@ typedef struct {
     char summary[SUMMARY_LEN];
 } client_response_t;
 
-/* Dispatcher -> Worker, over the message queue */
+/* A job the dispatcher passes along to the worker */
 typedef struct {
     int job_id;
     job_type_t type;
@@ -57,7 +58,7 @@ typedef struct {
     int64_t args[MAX_ARGS];
 } job_msg_t;
 
-/* One completed job, written by the worker into shared memory */
+/* A finished job. The worker fills this in for the others to read. */
 typedef struct {
     int job_id;
     job_type_t type;
@@ -66,24 +67,25 @@ typedef struct {
     struct timespec time_received, time_completed;
     char description[DESC_LEN];
     char summary[SUMMARY_LEN];
-    int logger_done;        /* logger has written this record to the log file   */
-    int dispatcher_done;    /* dispatcher has forwarded this record to a client */
-    size_t length;          /* number of valid items in data[] (0 in M2)        */
+    int logger_done;        // set once the logger has saved this job to the log file
+    int dispatcher_done;    // set once the dispatcher has sent the result to the client
+    size_t length;          // how many entries in data[] are filled in (always 0 in milestone 2)
     int64_t data[MAX_DATA_ITEMS];
 } job_record_t;
 
-/* Layout of the whole shared memory region */
+/* Everything stored in shared memory */
 typedef struct {
-    sem_t lock;             /* process-shared mutex guarding slot */
-    pid_t dispatcher_pid;   /* each process publishes its pid so others can signal it */
+    sem_t lock;             // lock: only one program may touch slot at a time
+    pid_t dispatcher_pid;   // each program's process ID, so the others can send it signals
     pid_t worker_pid;
     pid_t logger_pid;
-    job_record_t slot;      /* single slot: system handles one job at a time */
+    job_record_t slot;      // room for just one job, since the system runs one job at a time
 } shm_region_t;
 
 /*
- * Writes of PIPE_BUF bytes or fewer to a FIFO are atomic, so requests from
- * several clients sharing REQ_FIFO can never interleave.
+ * The OS guarantees that a small enough write to a pipe arrives all in one
+ * piece. Keeping requests and replies under that size means two clients
+ * writing at once can't get their messages mixed together.
  */
 _Static_assert(sizeof(client_request_t) <= PIPE_BUF, "request must fit in one atomic FIFO write");
 _Static_assert(sizeof(client_response_t) <= PIPE_BUF, "response must fit in one atomic FIFO write");

@@ -1,8 +1,9 @@
 /*
- * client.c - the only user-facing process.
+ * client.c - the program the user types commands into.
  *
- * Parses commands, sends a client_request_t over REQ_FIFO and waits for the
- * client_response_t on its own response FIFO. One job at a time.
+ * Reads a command, sends it to the dispatcher through the shared request
+ * pipe, and waits for the reply on this client's own reply pipe. It sends
+ * one job at a time.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -47,7 +48,7 @@ static int parse_int(const char *s, int64_t *out)
     return 0;
 }
 
-/* Returns 0 for a valid job request, 1 for quit, -1 for nothing to send. */
+/* Returns 0 if line is a valid job, 1 if the user wants to quit, -1 if there is nothing to send. */
 static int parse_command(char *line, client_request_t *req)
 {
     char *tok = strtok(line, " \t\n");
@@ -105,9 +106,10 @@ static int parse_command(char *line, client_request_t *req)
 
 int main(void)
 {
+    // attach cusom signal handlers
     install_handler(SIGINT, on_stop);
     install_handler(SIGTERM, on_stop);
-    signal(SIGPIPE, SIG_IGN);             /* report a dead dispatcher via EPIPE instead of dying */
+    signal(SIGPIPE, SIG_IGN);             // if the dispatcher is gone, print an error instead of crashing
 
     snprintf(resp_path, sizeof resp_path, RESP_FIFO_FMT, (int)getpid());
     unlink(resp_path);
@@ -115,6 +117,8 @@ int main(void)
         die("mkfifo response fifo");
     atexit(cleanup);
 
+
+    // need dispatcher to run first bc dispatcher opens the 
     int req_fd = open(REQ_FIFO, O_WRONLY);
     if (req_fd == -1) {
         if (errno == ENOENT)
@@ -124,9 +128,9 @@ int main(void)
         return 1;
     }
     /*
-     * O_RDWR keeps the FIFO open for the client's lifetime: the dispatcher's
-     * non-blocking open always finds a reader, and read() blocks for data
-     * instead of returning EOF when no writer is connected.
+     * Open our reply pipe for both reading and writing so it stays open the
+     * whole time. That way the dispatcher can always connect to it, and our
+     * reads wait for a reply instead of ending early when nobody is writing.
      */
     int resp_fd = open(resp_path, O_RDWR);
     if (resp_fd == -1)
@@ -138,7 +142,7 @@ int main(void)
         printf("job> ");
         fflush(stdout);
         if (!fgets(line, sizeof line, stdin))
-            break;                        /* EOF or interrupted by SIGINT */
+            break;                        // input ended, or the user pressed Ctrl+C
 
         client_request_t req;
         memset(&req, 0, sizeof req);

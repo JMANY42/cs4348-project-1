@@ -1,10 +1,11 @@
 /*
- * dispatcher.c - central coordinator.
+ * dispatcher.c - the middleman that runs the whole system.
  *
- * Owns all IPC objects. Reads requests from REQ_FIFO, assigns job ids,
- * forwards jobs to the worker over the message queue, waits for the
- * worker's SIGUSR1, reads the result from shared memory and replies to
- * the client over that client's response FIFO.
+ * Creates the pipe, queue, and shared memory everyone uses. It reads job
+ * requests from clients, gives each job a number, and passes it to the
+ * worker through the queue. When the worker signals that it is finished,
+ * the dispatcher reads the result from shared memory and sends it back to
+ * the client that asked for it.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -28,7 +29,7 @@ static void send_response(pid_t client_pid, const client_response_t *resp)
     char path[64];
     snprintf(path, sizeof path, RESP_FIFO_FMT, (int)client_pid);
 
-    /* O_NONBLOCK: fail with ENXIO instead of blocking forever if the client is gone. */
+    /* Don't wait: if the client has quit, give up right away instead of hanging forever. */
     int fd = open(path, O_WRONLY | O_NONBLOCK);
     if (fd == -1) {
         fprintf(stderr, "[dispatcher] client %d unreachable (%s), dropping job %d response\n",
@@ -52,14 +53,15 @@ static void reject(const client_request_t *req, const char *why)
 int main(void)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);
-    signal(SIGPIPE, SIG_IGN);             /* a vanished client must not kill the dispatcher */
+    signal(SIGPIPE, SIG_IGN);             // a client quitting early shouldn't crash the dispatcher
     install_handler(SIGINT, on_stop);
     install_handler(SIGTERM, on_stop);
     install_handler(SIGUSR1, on_usr1);
 
     /*
-     * Keep SIGUSR1 blocked except inside sigsuspend(). If the worker finishes
-     * before we start waiting, the signal stays pending instead of being lost.
+     * Hold the worker's "done" signal (SIGUSR1) until we are actually waiting
+     * for it. If the worker finishes before we start waiting, the signal is
+     * saved for later instead of being lost.
      */
     sigset_t usr1, waitmask;
     sigemptyset(&usr1);
@@ -74,7 +76,7 @@ int main(void)
     shm_region_t *shm = shm_create();
     shm->dispatcher_pid = getpid();
 
-    /* O_RDWR keeps a writer open on our own FIFO, so read() blocks instead of returning EOF between clients. */
+    /* Open the pipe for writing too, so reads keep waiting for the next client instead of ending when no client is connected. */
     int req_fd = open(REQ_FIFO, O_RDWR);
     if (req_fd == -1)
         die("open " REQ_FIFO);
@@ -123,7 +125,7 @@ int main(void)
         printf("[dispatcher] MQ -> job %d queued for worker\n", job.job_id);
 
         while (!job_done && !stop)
-            sigsuspend(&waitmask);        /* atomically unblock SIGUSR1 and sleep */
+            sigsuspend(&waitmask);        // sleep until the worker's signal arrives
         if (stop)
             break;
         printf("[dispatcher] SIGUSR1 <- worker: job %d complete\n", job.job_id);
