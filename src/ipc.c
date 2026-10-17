@@ -1,6 +1,7 @@
 #include "ipc.h"
 
 #include <errno.h>
+#include <stdarg.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
@@ -69,7 +70,7 @@ shm_region_t *shm_attach(void)
         fprintf(stderr, "shared memory %s not found - is the dispatcher running?\n", SHM_NAME);
         exit(1);
     }
-    /* The dispatcher may not have finished sizing the memory yet, so wait until it has. */
+    // The dispatcher may not have finished sizing the memory yet, so wait until it has.
     struct stat st;
     for (int i = 0; i < ATTACH_RETRIES; i++) {
         if (fstat(fd, &st) == -1)
@@ -127,6 +128,35 @@ void shm_unlock(shm_region_t *shm)
         die("sem_post");
 }
 
+void post_event(shm_region_t *shm, const char *source, const char *name, int job_id,
+                const char *fmt, ...)
+{
+    sys_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.time = now_timespec();
+    ev.pid = getpid();
+    ev.job_id = job_id;
+    snprintf(ev.source, sizeof ev.source, "%s", source);
+    snprintf(ev.name, sizeof ev.name, "%s", name);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(ev.detail, sizeof ev.detail, fmt, ap);
+    va_end(ap);
+
+    shm_lock(shm);
+    if (shm->ev_head - shm->ev_tail == EVENT_RING) {
+        shm->ev_tail++;                   // buffer full: drop the oldest event to make room
+        shm->ev_dropped++;
+    }
+    shm->events[shm->ev_head % EVENT_RING] = ev;
+    shm->ev_head++;
+    pid_t logger = shm->logger_pid;
+    shm_unlock(shm);
+
+    if (logger > 0)
+        kill(logger, SIGUSR1);            // if the logger is off, it picks the event up when it starts
+}
+
 struct timespec now_timespec(void)
 {
     struct timespec ts;
@@ -164,6 +194,38 @@ int job_args_ok(job_type_t type, int nargs)
     case JOB_IS_PRIME:     return nargs == 1;
     default:               return 0;
     }
+}
+
+int job_validate(job_type_t type, int nargs, const int64_t *args, char *err, size_t n)
+{
+    if (type < 0 || type >= JOB_TYPE_COUNT) {
+        snprintf(err, n, "unknown job type %d", (int)type);
+        return -1;
+    }
+    if (!job_args_ok(type, nargs)) {
+        snprintf(err, n, "wrong number of arguments for %s", job_type_name(type));
+        return -1;
+    }
+    if (type == JOB_PRIMES_RANGE) {
+        int64_t lo = args[0] < 0 ? 0 : args[0], hi = args[1];
+        if (args[0] > hi) {
+            snprintf(err, n, "primes: lo must be <= hi");
+            return -1;
+        }
+        if (hi > MAX_PRIME_VALUE) {
+            snprintf(err, n, "primes: hi must be <= %lld", (long long)MAX_PRIME_VALUE);
+            return -1;
+        }
+        if (hi - lo > MAX_PRIME_SPAN) {
+            snprintf(err, n, "primes: hi - lo must be <= %lld", (long long)MAX_PRIME_SPAN);
+            return -1;
+        }
+    }
+    if (type == JOB_FIB && (args[0] < 0 || args[0] > MAX_FIB_N)) {
+        snprintf(err, n, "fib: n must be in [0, %d]", MAX_FIB_N);
+        return -1;
+    }
+    return 0;
 }
 
 void describe_job(job_type_t type, int nargs, const int64_t *args, char *buf, size_t n)

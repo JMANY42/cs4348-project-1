@@ -1,33 +1,46 @@
-# CS 4348 PROJECT 1 MILESTONE 1 SUBMISSION
+# CS 4348 PROJECT 1 MILESTONE 3 SUBMISSION
 Valerie Nelson and David Lewis
 
-## What we submitted
+## Status report
 
-We submitted four skeleton programs (client.c, dispatcher.c, logger.c, and worker.c) that do not have functinoality yet but connect to one another via the interprocess communication methods. These methods are coordinated through the seperate processes via a common header file and ipc.c. 
+### Completed
+* **Dispatching:** clients send requests over a shared named pipe. The
+  dispatcher validates each one, gives it a job ID, and queues it for the
+  worker on a POSIX message queue. Replies go back on each client's own pipe.
+* **Job execution:** the worker computes `ping`, `sort` (up to 64 integers),
+  `primes lo hi` (segmented sieve), `fib n` (n <= 92), and `isprime n`
+  (Miller-Rabin, any 64-bit integer).
+* **Results through shared memory:** the worker writes the status, summary,
+  and up to 1 MB of result values into shared memory, then signals the
+  dispatcher and logger with `SIGUSR1`. The dispatcher reads the result and
+  sends the client the summary plus the first 64 values.
+* **Event logging:** the dispatcher and worker post system events (start/stop,
+  job received/queued/started/rejected, response sent/failed) to a ring buffer
+  in shared memory. The logger writes them, plus a full record of each
+  completed job, to `jobs.log` as JSON lines. Events from while the logger
+  was stopped are written once it restarts.
+* **Multiple requests:** clients can send many jobs, and several clients can
+  run at once. The demo runs 19 jobs across one and three concurrent clients,
+  all completed and logged, with clean IPC teardown on shutdown.
 
-ipc.c defines: 
-* client -> dispather named pipe
-* dispather -> worker message queue
-* worker -> dispatcher, logger shared memory and signal
-
-
-To be done for milestone 3:
-* Functinality of jobs requested by client
-* Inter process error handleing 
-
+### Remaining (milestone 4)
+* Crash handling: detect a dead worker and add job timeouts. Right now the
+  dispatcher waits forever if the worker dies mid-job.
+* Shared memory holds one result, so jobs that finish while the logger is
+  down can be overwritten before they are logged.
+* Jobs run one at a time. Plan: multiple workers, each with its own result slot.
+* Clients only receive the first 64 values of a large result.
 
 ## To Run
-Run 
 ```
-make
+make            # build all four binaries
+make run        # scripted demo
+make clean-ipc  # remove leftover IPC objects after a crash
 ```
-to compile all four binaries. 
-
-Then, in seperate terminals, run 
+Or start each program in its own terminal, dispatcher first:
 ```
-./client
 ./dispatcher
 ./logger
 ./worker
+./client        # type 'help' for commands
 ```
-to see them in action.

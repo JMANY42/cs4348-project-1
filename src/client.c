@@ -1,10 +1,8 @@
-/*
- * client.c - the program the user types commands into.
- *
- * Reads a command, sends it to the dispatcher through the shared request
- * pipe, and waits for the reply on this client's own reply pipe. It sends
- * one job at a time.
- */
+// client.c - the program the user types commands into.
+//
+// Reads a command, sends it to the dispatcher through the shared request
+// pipe, and waits for the reply on this client's own reply pipe. It sends
+// one job at a time.
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -31,7 +29,7 @@ static void print_help(void)
     printf("commands:\n"
            "  ping                 check the pipeline end to end\n"
            "  sort n1 n2 ...       sort up to %d integers\n"
-           "  primes lo hi         primes in [lo, hi]\n"
+           "  primes lo hi         primes in [lo, hi] (hi <= 10^12, hi - lo <= 10^7)\n"
            "  fib n                first n Fibonacci numbers (n <= %d)\n"
            "  isprime n            is n prime?\n"
            "  help | quit\n", MAX_ARGS, MAX_FIB_N);
@@ -48,7 +46,7 @@ static int parse_int(const char *s, int64_t *out)
     return 0;
 }
 
-/* Returns 0 if line is a valid job, 1 if the user wants to quit, -1 if there is nothing to send. */
+// Returns 0 if line is a valid job, 1 if the user wants to quit, -1 if there is nothing to send.
 static int parse_command(char *line, client_request_t *req)
 {
     char *tok = strtok(line, " \t\n");
@@ -89,24 +87,29 @@ static int parse_command(char *line, client_request_t *req)
         }
         req->nargs++;
     }
-    if (!job_args_ok(req->type, req->nargs)) {
-        printf("wrong number of arguments for %s (try help)\n", job_type_name(req->type));
-        return -1;
-    }
-    if (req->type == JOB_PRIMES_RANGE && req->args[0] > req->args[1]) {
-        printf("primes: lo must be <= hi\n");
-        return -1;
-    }
-    if (req->type == JOB_FIB && (req->args[0] < 0 || req->args[0] > MAX_FIB_N)) {
-        printf("fib: n must be in [0, %d]\n", MAX_FIB_N);
+    char err[SUMMARY_LEN];
+    if (job_validate(req->type, req->nargs, req->args, err, sizeof err) == -1) {
+        printf("%s (try help)\n", err);
         return -1;
     }
     return 0;
 }
 
+// Print the result values the dispatcher sent along, 10 per line
+static void print_data(const client_response_t *resp)
+{
+    if (resp->type == JOB_IS_PRIME || resp->count == 0)
+        return;
+    for (int i = 0; i < resp->count; i++)
+        printf("%s%lld", i % 10 == 0 ? "\n    " : " ", (long long)resp->data[i]);
+    if (resp->length > (size_t)resp->count)
+        printf(" ... (%zu more)", resp->length - resp->count);
+    printf("\n");
+}
+
 int main(void)
 {
-    // attach cusom signal handlers
+    // attach custom signal handlers
     install_handler(SIGINT, on_stop);
     install_handler(SIGTERM, on_stop);
     signal(SIGPIPE, SIG_IGN);             // if the dispatcher is gone, print an error instead of crashing
@@ -118,7 +121,7 @@ int main(void)
     atexit(cleanup);
 
 
-    // need dispatcher to run first bc dispatcher opens the 
+    // the dispatcher has to be running first, since it creates the request pipe
     int req_fd = open(REQ_FIFO, O_WRONLY);
     if (req_fd == -1) {
         if (errno == ENOENT)
@@ -127,11 +130,9 @@ int main(void)
             perror("open " REQ_FIFO);
         return 1;
     }
-    /*
-     * Open our reply pipe for both reading and writing so it stays open the
-     * whole time. That way the dispatcher can always connect to it, and our
-     * reads wait for a reply instead of ending early when nobody is writing.
-     */
+    // Open our reply pipe for both reading and writing so it stays open the
+    // whole time. That way the dispatcher can always connect to it, and our
+    // reads wait for a reply instead of ending early when nobody is writing.
     int resp_fd = open(resp_path, O_RDWR);
     if (resp_fd == -1)
         die("open response fifo");
@@ -169,6 +170,7 @@ int main(void)
         }
         printf("[job %d] %s %s: %s\n", resp.job_id, job_type_name(resp.type),
                job_status_name(resp.status), resp.summary);
+        print_data(&resp);
     }
 
     close(req_fd);
